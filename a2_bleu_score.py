@@ -126,4 +126,4 @@ def BLEU_score(reference, candidate, n):
 
     BP = brevity_penalty(reference, candidate)
 
-    return BP * (p ^ (1/n))
+    return BP * (p ^ (1.0/n))

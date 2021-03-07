@@ -41,7 +41,7 @@ def grouper(seq, n):
     ngrams = []
     length = len(seq)
 
-    for i in range(length - n):
+    for i in range(length - n + 1):
         ngrams.append(seq[i:i+n])
 
     return ngrams
@@ -121,7 +121,7 @@ def BLEU_score(reference, candidate, n):
     '''
     p = 1
 
-    for i in range(1, n):
+    for i in range(1, n + 1):
         p *= n_gram_precision(reference, candidate, i)
 
     BP = brevity_penalty(reference, candidate)

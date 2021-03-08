@@ -109,13 +109,13 @@ class DecoderWithoutAttention(DecoderBase):
         # 4. Relevant pytorch modules:
         #   torch.nn.{Embedding, Linear, LSTMCell, RNNCell, GRUCell}
         if self.cell_type == 'lstm':
-            self.cell = torch.nn.LSTMCell(input_size=self.hidden_state_size, hidden_size=self.hidden_state_size)
+            self.cell = torch.nn.LSTMCell(input_size=self.word_embedding_size, hidden_size=self.hidden_state_size)
         elif self.cell_type == 'gru':
-            self.cell = torch.nn.GRUCell(input_size=self.hidden_state_size, hidden_size=self.hidden_state_size)
+            self.cell = torch.nn.GRUCell(input_size=self.word_embedding_size, hidden_size=self.hidden_state_size)
         else:
-            self.cell = torch.nn.RNNCell(input_size=self.hidden_state_size, hidden_size=self.hidden_state_size)
+            self.cell = torch.nn.RNNCell(input_size=self.word_embedding_size, hidden_size=self.hidden_state_size)
 
-        self.embedding = torch.nn.Embedding(num_embeddings=self.hidden_state_size, 
+        self.embedding = torch.nn.Embedding(num_embeddings=self.target_vocab_size, 
                                         embedding_dim=self.word_embedding_size, 
                                         padding_idx=self.pad_id)
         self.ff = torch.nn.Linear(in_features=self.hidden_state_size,out_features=self.target_vocab_size)
@@ -354,12 +354,12 @@ class EncoderDecoder(EncoderDecoderBase):
                                     hidden_state_size=self.encoder_hidden_size,
                                     dropout=self.encoder_dropout,
                                     cell_type=self.cell_type)
+        self.encoder.init_submodules()
         self.decoder = decoder_class(pad_id=self.target_eos,
                                     word_embedding_size=self.word_embedding_size,
-                                    hidden_state_size=self.encoder_hidden_size * 2,
+                                    hidden_state_size=self.encoder_hidden_size*2,
                                     cell_type=self.cell_type,
                                     target_vocab_size=self.target_vocab_size)
-        self.encoder.init_submodules()
         self.decoder.init_submodules()
 
     def get_logits_for_teacher_forcing(self, h, F_lens, E):

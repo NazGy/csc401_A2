@@ -89,7 +89,7 @@ class Encoder(EncoderBase):
         # Hint:
         #   relevant pytorch modules:
         #   torch.nn.utils.rnn.{pad_packed,pack_padded}_sequence
-        packed = torch.nn.utils.rnn.pack_padded_sequence(x, F_lens)
+        packed = torch.nn.utils.rnn.pack_padded_sequence(x, F_lens,enforce_sorted=False)
         output, _ = self.rnn(packed)
         output, _ = torch.nn.utils.rnn.pad_packed_sequence(output, padding_value=h_pad)
         return output

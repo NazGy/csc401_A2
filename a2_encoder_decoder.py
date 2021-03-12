@@ -340,24 +340,6 @@ class DecoderWithMultiHeadAttention(DecoderWithAttention):
         self.Wtilde = torch.nn.Linear(self.hidden_state_size, self.hidden_state_size, bias=False)
         self.Q = torch.nn.Linear(self.hidden_state_size, self.hidden_state_size, bias=False)
 
-    def transpose_qkv(self, X, num_heads):
-        # Shape of input `X`:
-        # (`batch_size`, no. of queries or key-value pairs, `num_hiddens`).
-        # Shape of output `X`:
-        # (`batch_size`, no. of queries or key-value pairs, `num_heads`,
-        # `num_hiddens` / `num_heads`)
-        X = X.reshape(X.shape[0], X.shape[1]//num_heads, num_heads, -1)
-
-        # Shape of output `X`:
-        # (`batch_size`, `num_heads`, no. of queries or key-value pairs,
-        # `num_hiddens` / `num_heads`)
-        X = X.permute(0, 2, 1, 3)
-
-        # Shape of `output`:
-        # (`batch_size` * `num_heads`, no. of queries or key-value pairs,
-        # `num_hiddens` / `num_heads`)
-        return X.reshape(-1, X.shape[2], X.shape[3])
-
     def attend(self, htilde_t, h, F_lens):
         # Hints:
         # 1. You can use super().attend to call for the regular attention
@@ -491,13 +473,11 @@ class EncoderDecoder(EncoderDecoderBase):
         # 2. If you flatten a two-dimensional array of size z of (A, B),
         #   then the element z[a, b] maps to z'[a*B + b]
         
-        # TODO: Change stuff here!
-        V = logpy_t.shape[-1]
-        # print(V.shape)
         potential = (logpb_tm1.unsqueeze(-1) + logpy_t).view((logpy_t.shape[0], -1))
         logpb_t, v = potential.topk(self.beam_width,dim=-1,largest=True,sorted=True)
         # print(potential.shape, logpb_t.shape, v.shape)
-
+        V = logpy_t.shape[-1]
+        # print(V.shape)
         chosenPaths = torch.div(v, V)
 
         v = torch.remainder(v, V)

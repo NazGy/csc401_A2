@@ -77,7 +77,9 @@ def train_for_epoch(model, dataloader, optimizer, device):
     # If you are running into CUDA memory errors part way through training,
     # try "del F, F_lens, E, logits, loss" at the end of each iteration of
     # the loop.
-    loss = torch.nn.CrossEntropyLoss()
+    avg_loss = 0
+    count = 0
+    lossFunc = torch.nn.CrossEntropyLoss()
     for F, F_lens, E in tqdm(dataloader):
         F = F.to(device)
         F_lens = F_lens.to(device)
@@ -91,12 +93,14 @@ def train_for_epoch(model, dataloader, optimizer, device):
         logits = torch.flatten(logits, start_dim=0, end_dim=-2)
         E = torch.flatten(E[1:], start_dim=0)
 
-        loss = loss_fn(logits, E)
-
+        loss = lossFunc(logits, E)
+        avg_loss += loss
         loss.backward()
-        optim.step()
+        optimizer.step()
+        count +=1
         del F, F_lens, E, logits, loss
-        
+    return avg_loss/count
+
 def compute_batch_total_bleu(E_ref, E_cand, target_sos, target_eos):
     '''Calculates the total BLEU score over elements in a batch
 
@@ -125,11 +129,28 @@ def compute_batch_total_bleu(E_ref, E_cand, target_sos, target_eos):
     eos = str(target_eos)
     sos = str(target_sos)
     score = 0
-    references = E_ref.toList()
-    candiadates = E_cand.toList()
+    references = E_ref.T.tolist()
+    candiadates = E_cand.T.tolist()
     for i in range(len(references)):
-        ref = references[i].replace(eos, "").replace(sos, "")
-        cand = candiadates[i].replace(eos, "").replace(sos, "")
+        ref = references[i]
+        cand = candiadates[i]
+
+        sosInd = 0
+        eosInd = len(ref)
+        if sos in ref:
+            sosInd = ref.index(sos)
+        if eos in ref:
+            eosInd = ref.index(eos)
+        ref = ref[sosInd:eosInd]
+
+        sosInd = 0
+        eosInd = len(cand)
+        if sos in cand:
+            sosInd = cand.index(sos)
+        if eos in cand:
+            eosInd = cand.index(eos)
+        cand = cand[sosInd:eosInd]
+
         score+=a2_bleu_score.BLEU_score(ref, cand, n)
 
     return score
@@ -177,5 +198,5 @@ def compute_average_bleu_over_dataset(
         b_1 = model(F, F_lens)
         E_cand = b_1[:, :, 0]
         score += compute_batch_total_bleu(E_ref, E_cand, target_sos, target_eos)
-        count += F_lens.size(0)
-    return total / count
+        count += F_lens.shape[0]
+    return score / count

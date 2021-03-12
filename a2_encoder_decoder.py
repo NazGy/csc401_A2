@@ -39,24 +39,24 @@ class Encoder(EncoderBase):
         # 3. cell_type will be one of: ['lstm', 'gru', 'rnn']
         # 4. Relevant pytorch modules: torch.nn.{LSTM, GRU, RNN, Embedding}
         if self.cell_type == 'lstm':
-            self.rnn = torch.nn.LSTM(input_size=self.source_vocab_size, 
-                                    hidden_size=self.hidden_state_size, 
+            self.rnn = torch.nn.LSTM(self.word_embedding_size, self.hidden_state_size,
                                     dropout=self.dropout, 
-                                    num_layers=self.num_hidden_layers)
+                                    num_layers=self.num_hidden_layers,
+                                    bidirectional=True)
         elif self.cell_type == 'gru':
-            self.rnn = torch.nn.GRU(input_size=self.source_vocab_size, 
-                                    hidden_size=self.hidden_state_size, 
+            self.rnn = torch.nn.GRU(self.word_embedding_size, self.hidden_state_size,
                                     dropout=self.dropout, 
-                                    num_layers=self.num_hidden_layers)
+                                    num_layers=self.num_hidden_layers,
+                                    bidirectional=True)
         else:
-            self.rnn = torch.nn.RNN(input_size=self.source_vocab_size, 
-                                    hidden_size=self.hidden_state_size, 
+            self.rnn = torch.nn.RNN(self.word_embedding_size, self.hidden_state_size,
                                     dropout=self.dropout, 
-                                    num_layers=self.num_hidden_layers)
+                                    num_layers=self.num_hidden_layers,
+                                    bidirectional=True)
         
-        self.embedding = torch.nn.Embedding(num_embeddings=self.source_vocab_size, 
-                                        embedding_dim=self.word_embedding_size, 
-                                        padding_idx=self.pad_id)
+        self.embedding =  torch.nn.Embedding(self.source_vocab_size,
+                                            self.word_embedding_size,
+                                            padding_idx=self.pad_id)
 
     def forward_pass(self, F, F_lens, h_pad=0.):
         # Recall:
@@ -90,7 +90,8 @@ class Encoder(EncoderBase):
         #   relevant pytorch modules:
         #   torch.nn.utils.rnn.{pad_packed,pack_padded}_sequence
         packed = torch.nn.utils.rnn.pack_padded_sequence(x, F_lens,enforce_sorted=False)
-        output, _ = self.rnn(packed)
+        # print("SHAPE", x.shape)
+        output, _ = self.rnn.forward(packed)
         output, _ = torch.nn.utils.rnn.pad_packed_sequence(output, padding_value=h_pad)
         return output
 
@@ -141,15 +142,21 @@ class DecoderWithoutAttention(DecoderBase):
         #   is either initialized, or t > 1.
         # 4. The output of an LSTM cell is a tuple (h, c), but a GRU cell or an
         #   RNN cell will only output h.
+
+        # print("H", h.shape, "ht", htilde_tm1[0].shape, self.hidden_state_size)
+
         xtilde_t = self.get_current_rnn_input(E_tm1, htilde_tm1, h, F_lens)
 
-        htilde_tm1 = self.get_first_hidden_state(h, F_lens)
+        htilde_t = self.get_current_hidden_state(xtilde_t, htilde_tm1)
 
-        htile_t = self.get_current_hidden_state(xtilde_t, htilde_tm1)
+        if self.cell_type == 'lstm':
+            logits_t = self.get_current_logits(htilde_t[0])
+        else:
+            logits_t = self.get_current_logits(htilde_t)
 
-        logits_t = self.get_current_logits(htile_t)
+        # print("compare:", htilde_t[0].shape, htilde_tm1[0].shape)
 
-        return logits_t
+        return logits_t, htilde_t
 
     def get_first_hidden_state(self, h, F_lens):
         # Recall:
@@ -167,8 +174,10 @@ class DecoderWithoutAttention(DecoderBase):
         #   with the hidden states of the encoder's backward direction at time
         #   t=0
         # 2. Relevant pytorch functions: torch.cat
-        forward = h[F_lens -1, torch.arange(F_lens.size(0)), :self.hidden_state_size // 2]
+
+        forward = h[F_lens - 1, torch.arange(F_lens.shape[0]), :self.hidden_state_size // 2]
         backward = h[0, :, self.hidden_state_size // 2:]
+        # print(h.shape, forward.shape, backward.shape)
         return torch.cat([forward, backward], dim=1)
 
     def get_current_rnn_input(self, E_tm1, htilde_tm1, h, F_lens):
@@ -178,7 +187,8 @@ class DecoderWithoutAttention(DecoderBase):
         #   h is of size (S, M, 2 * H)
         #   F_lens is of size (M,)
         #   xtilde_t (output) is of size (M, Itilde)
-        return self.embedding(E_tm1)
+        xtilde_t = self.embedding(E_tm1)
+        return xtilde_t
 
     def get_current_hidden_state(self, xtilde_t, htilde_tm1):
         # Recall:
@@ -189,15 +199,15 @@ class DecoderWithoutAttention(DecoderBase):
             htilde_tm1 = (htilde_tm1[0][:, :self.hidden_state_size], htilde_tm1[1][:, :self.hidden_state_size])
         else:
             htilde_tm1 = htilde_tm1[:, :self.hidden_state_size]
-        output, _ = self.cell(xtilde_t, htilde_tm1)
-        return output
+
+        # print("X", xtilde_t.shape, "H", htilde_tm1[0].shape)
+        return self.cell(xtilde_t, htilde_tm1)
 
     def get_current_logits(self, htilde_t):
         # Recall:
         #   htilde_t is of size (M, 2 * H), even for LSTM (cell state discarded)
         #   logits_t (output) is of size (M, V)
-        logits_t = self.ff(htilde_t)
-        # logits_t = torch.F.softmax(logits_t)
+        logits_t = self.ff.forward(htilde_t)
         return logits_t
 
 class DecoderWithAttention(DecoderWithoutAttention):
@@ -219,13 +229,13 @@ class DecoderWithAttention(DecoderWithoutAttention):
         # 5. The implementation of this function should be different from
         #   DecoderWithoutAttention.init_submodules.
         if self.cell_type == 'lstm':
-            self.cell = torch.nn.LSTMCell(input_size=self.hidden_state_size, hidden_size=self.hidden_state_size)
+            self.cell = torch.nn.LSTMCell(input_size=self.hidden_state_size + self.word_embedding_size, hidden_size=self.hidden_state_size)
         elif self.cell_type == 'gru':
-            self.cell = torch.nn.GRUCell(input_size=self.hidden_state_size, hidden_size=self.hidden_state_size)
+            self.cell = torch.nn.GRUCell(input_size=self.hidden_state_size + self.word_embedding_size, hidden_size=self.hidden_state_size)
         else:
-            self.cell = torch.nn.RNNCell(input_size=self.hidden_state_size, hidden_size=self.hidden_state_size)
+            self.cell = torch.nn.RNNCell(input_size=self.hidden_state_size + self.word_embedding_size, hidden_size=self.hidden_state_size)
 
-        self.embedding = torch.nn.Embedding(num_embeddings=self.hidden_state_size, 
+        self.embedding = torch.nn.Embedding(num_embeddings=self.target_vocab_size, 
                                         embedding_dim=self.word_embedding_size, 
                                         padding_idx=self.pad_id)
         self.ff = torch.nn.Linear(in_features=self.hidden_state_size,out_features=self.target_vocab_size)
@@ -237,7 +247,10 @@ class DecoderWithAttention(DecoderWithoutAttention):
 
     def get_current_rnn_input(self, E_tm1, htilde_tm1, h, F_lens):
         # Hint: Use attend() for c_t
-        return torch.cat([self.embedding(E_tm1), self.attend(htilde_tm1, h, F_lens)])
+        embedded = self.embedding(E_tm1)
+        atten = self.attend(htilde_tm1, h, F_lens)
+        # print(embedded.shape, atten.shape)
+        return torch.cat([embedded, atten], dim=1)
 
     def attend(self, htilde_t, h, F_lens):
         '''The attention mechanism. Calculate the context vector c_t.
@@ -266,10 +279,12 @@ class DecoderWithAttention(DecoderWithoutAttention):
 
         Hint: Use get_attention_weights() to calculate alpha_t.
         '''
-        alpha_t = self.get_attention_weights(htilde_t, h, F_lens)
-        htilde_t = htilde_t.transpose(0, 1)
-        context = torch.bmm(alpha_t, htilde_t)
-        context = context.squeeze(2)
+        alpha_t = self.get_attention_weights(htilde_t, h, F_lens) 
+        alpha_t = alpha_t.unsqueeze(2)
+        # print(alpha_t.shape, h.shape, self.hidden_state_size)
+        context = (alpha_t * h).sum(dim=0)
+        # print(context.shape)
+        return context
 
     def get_attention_weights(self, htilde_t, h, F_lens):
         # DO NOT MODIFY! Calculates attention weights, ensuring padded terms
@@ -290,9 +305,13 @@ class DecoderWithAttention(DecoderWithoutAttention):
         #
         # Hint:
         # Relevant pytorch functions: torch.nn.functional.cosine_similarity
-        # cos = torch.nn.CosineSimilarity(dim=2)
-        htilde_t = htilde_t.unsqueeze(0)
-        e_t = torch.nn.CosineSimilarity(htilde_t, h, dim=2)
+        if self.cell_type == "lstm":
+            ht = htilde_t[0].unsqueeze(0)
+        else:
+            ht = htilde_t.unsqueeze(0)
+        cosim = torch.nn.CosineSimilarity(dim=2)
+        e_t = cosim(ht, h)
+        # print("E:", e_t.shape)
         return e_t
 
 class DecoderWithMultiHeadAttention(DecoderWithAttention):
@@ -317,7 +336,27 @@ class DecoderWithMultiHeadAttention(DecoderWithAttention):
         #    should not be lists!
         # 5. Relevant pytorch module: torch.nn.Linear (note: set bias=False!)
         # 6. You do *NOT* need self.heads at this point
-        assert False, "Fill me"
+        self.W = torch.nn.Linear(self.hidden_state_size, self.hidden_state_size, bias=False)
+        self.Wtilde = torch.nn.Linear(self.hidden_state_size, self.hidden_state_size, bias=False)
+        self.Q = torch.nn.Linear(self.hidden_state_size, self.hidden_state_size, bias=False)
+
+    def transpose_qkv(self, X, num_heads):
+        # Shape of input `X`:
+        # (`batch_size`, no. of queries or key-value pairs, `num_hiddens`).
+        # Shape of output `X`:
+        # (`batch_size`, no. of queries or key-value pairs, `num_heads`,
+        # `num_hiddens` / `num_heads`)
+        X = X.reshape(X.shape[0], X.shape[1]//num_heads, num_heads, -1)
+
+        # Shape of output `X`:
+        # (`batch_size`, `num_heads`, no. of queries or key-value pairs,
+        # `num_hiddens` / `num_heads`)
+        X = X.permute(0, 2, 1, 3)
+
+        # Shape of `output`:
+        # (`batch_size` * `num_heads`, no. of queries or key-value pairs,
+        # `num_hiddens` / `num_heads`)
+        return X.reshape(-1, X.shape[2], X.shape[3])
 
     def attend(self, htilde_t, h, F_lens):
         # Hints:
@@ -330,7 +369,50 @@ class DecoderWithMultiHeadAttention(DecoderWithAttention):
         #   tensor([1,2,3,4]).repeat(2) will output tensor([1,2,3,4,1,2,3,4]).
         #   tensor([1,2,3,4]).repeat_interleave(2) will output
         #   tensor([1,1,2,2,3,3,4,4]), just like numpy.repeat.
-        assert False, "Fill me"
+        # batch_size, len_q, len_k, len_v = q.size(0), q.size(1), k.size(1), v.size(1)
+        # d_k = h.shape[2]
+        
+        S, M, H2 = h.size()
+        
+        # print(htilde_t.shape, h.shape, F_lens.shape)
+        # print(htilde_t)
+        # print(h)
+        # print(F_lens)
+        # print(self.heads)
+        if self.cell_type == 'lstm':
+            med =  self.Wtilde(htilde_t[0])
+        else:
+            med =  self.Wtilde(htilde_t)
+        # .view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        # htilde_tn = med.view(self.heads, H2//self.heads, M)
+        htilde_tn = med.view(M, H2//self.heads, self.heads)
+        # .reshape(batch_size, seq_length, self.num_heads, 3*self.head_dim)
+        # htilde_tn = self.transpose_qkv(med, self.heads)
+        sed = self.W(h)
+        # hn = sed.view(batch_size, -1, self.heads, emb//self.heads).transpose(1, 2)
+        # hn = sed.view(S, self.heads, H2//self.heads, M)
+        hn = sed.view(S, M, H2//self.heads, self.heads)
+
+        # print(htilde_tn.shape, hn.shape, F_lens.shape)
+        
+        if self.cell_type == 'lstm':
+            context = super().attend((htilde_tn[:, :, 0], 0), hn[:, :, :, 0], F_lens)
+            for i in range(1, self.heads):
+                ct = super().attend((htilde_tn[:, :, i], 0), hn[:, :, :, i], F_lens)
+                # print("context:", ct.shape)
+                context = torch.cat([context, ct], dim=1)
+        else:
+            context = super().attend(htilde_tn[:, :, 0], hn[:, :, :, 0], F_lens)
+            # print("context:", context.shape)
+            for i in range(1, self.heads):
+                ct = super().attend(htilde_tn[:, :, i], hn[:, :, :, i], F_lens)
+                # print("context:", ct.shape)
+                context = torch.cat([context, ct], dim=1)
+
+        # context = super().attend(htilde_tn, hn, F_lens)
+        # # context = super().attend(htilde_t, h, F_lens)
+        # ct = context.view(S, M, H2)
+        return self.Q(context)
 
 class EncoderDecoder(EncoderDecoderBase):
 
@@ -357,9 +439,10 @@ class EncoderDecoder(EncoderDecoderBase):
         self.encoder.init_submodules()
         self.decoder = decoder_class(pad_id=self.target_eos,
                                     word_embedding_size=self.word_embedding_size,
-                                    hidden_state_size=self.encoder_hidden_size*2,
+                                    hidden_state_size=self.encoder_hidden_size * 2,
                                     cell_type=self.cell_type,
-                                    target_vocab_size=self.target_vocab_size)
+                                    target_vocab_size=self.target_vocab_size,
+                                    heads=self.heads)
         self.decoder.init_submodules()
 
     def get_logits_for_teacher_forcing(self, h, F_lens, E):
@@ -373,11 +456,18 @@ class EncoderDecoder(EncoderDecoderBase):
         # 1. Relevant pytorch modules: torch.{zero_like, stack}
         # 2. Recall an LSTM's cell state is always initialized to zero.
         # 3. Note logits sequence dimension is one shorter than E (why?)
-        logits = torch.zeros_like(E)
+        # logits = torch.zeros_like(E)
+        # h_tilde_tm1 = None
+        # for i in range(E.size()[0] - 1):
+        #     logit, h_tilde_tm1 = self.decoder.forward(E[i], h_tilde_tm1, h, F_lens)
+        #     logits = torch.stack([logits, logit], 0)
+        # return logits
+        logits = []  # for holding logits as we do all steps in time
         h_tilde_tm1 = None
-        for i in range(E.size()[0] - 1):
-            logit, h_tilde_tm1 = self.decoder.forward(E[i], h_tilde_tm1, h, F_lens)
-            logits = torch.stack([logits, logit], 0)
+        for t in range(E.shape[0] - 1):
+            logit, h_tilde_tm1 = self.decoder.forward(E[t], h_tilde_tm1, h, F_lens)
+            logits.append(logit)
+        logits = torch.stack(logits, dim=0)
         return logits
 
     def update_beam(self, htilde_t, b_tm1_1, logpb_tm1, logpy_t):
@@ -402,26 +492,25 @@ class EncoderDecoder(EncoderDecoderBase):
         #   then the element z[a, b] maps to z'[a*B + b]
         
         # TODO: Change stuff here!
-        V = logpy_t.size()[-1]
-        all_paths = logpb_tm1.unsqueeze(-1) + logpy_t  # (N, K, V), add logprobs for new extensions
-        all_paths = all_paths.view((all_paths.shape[0], -1))  # (N, K*V)
-        logpb_t, v = all_paths.topk(self.beam_width,
-                                    -1,
-                                    largest=True,
-                                    sorted=True)  # take beam_width best possible extensions
-        logpb_t = logpb_t  # (N, K)
-        # v is (N, K)
-        # v are the indices of the maximal values.
-        paths = torch.div(v, V)  # paths chosen to be kept
-        v = torch.remainder(v, V)  # the indices of the extended words that are kept
-        # choose the paths from b_tm1_1 that were kept in our next propogation
-        b_tm1_1 = b_tm1_1.gather(2, paths.unsqueeze(0).expand_as(b_tm1_1))
-        # choose the htdile that coorespond to the taken paths
+        V = logpy_t.shape[-1]
+        # print(V.shape)
+        potential = (logpb_tm1.unsqueeze(-1) + logpy_t).view((logpy_t.shape[0], -1))
+        logpb_t, v = potential.topk(self.beam_width,dim=-1,largest=True,sorted=True)
+        # print(potential.shape, logpb_t.shape, v.shape)
+
+        chosenPaths = torch.div(v, V)
+
+        v = torch.remainder(v, V)
+
+        chosenB = b_tm1_1.gather(dim=2, index=chosenPaths.unsqueeze(0).expand_as(b_tm1_1))
+        # print(chosenB.shape)
         if self.cell_type == 'lstm':
-          b_t_0 = (htilde_t[0].gather(1, paths.unsqueeze(-1).expand_as(htilde_t[0])),
-                   htilde_t[1].gather(1, paths.unsqueeze(-1).expand_as(htilde_t[1])))
+            bt0 = (htilde_t[0].gather(dim=1, index=chosenPaths.unsqueeze(-1).expand_as(htilde_t[0])),
+                   htilde_t[1].gather(dim=1, index=chosenPaths.unsqueeze(-1).expand_as(htilde_t[1])))
         else:
-          b_t_0 = htilde_t.gather(1, paths.unsqueeze(-1).expand_as(htilde_t))
-        v = v.unsqueeze(0)  # (1, N, K)
-        b_t_1 = torch.cat([b_tm1_1, v], dim=0)
-        return b_t_0, b_t_1, logpb_t
+            bt0 = htilde_t.gather(dim=1, index=chosenPaths.unsqueeze(-1).expand_as(htilde_t))
+        
+        bt1 = torch.cat([chosenB, v.unsqueeze(0)], dim=0)
+        # print(bt0.shape, bt1.shape)
+
+        return bt0, bt1, logpb_t

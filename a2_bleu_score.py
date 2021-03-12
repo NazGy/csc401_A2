@@ -97,7 +97,7 @@ def brevity_penalty(reference, candidate):
     if brevity < 1:
         return 1
     else:
-        return exp ^ (1-brevity)
+        return exp(1-brevity)
 
 def BLEU_score(reference, candidate, n):
     '''Calculate the BLEU score
